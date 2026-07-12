@@ -15,8 +15,8 @@
 #include <thread>
 #include <chrono>
 
-#define GRID_WIDTH 2048
-#define GRID_HEIGHT 2048
+#define GRID_WIDTH 128
+#define GRID_HEIGHT 128
 
 
 
@@ -34,8 +34,8 @@ void get_terminal_dimensions(int& rows, int& cols)
 }
 
 // https://gist.github.com/ConnerWill/d4b6c776b509add763e17f9f113fd25b
-void move_cursor_up(unsigned int n) {
-	std::cout << "\x1B[" << n << "A" << std::flush;
+void move_cursor_top() {
+	std::cout << "\x1B[1;1H" << std::flush;
 }
 
 // https://stackoverflow.com/a/912796
@@ -72,20 +72,26 @@ struct Camera {
 	int center_x = (GRID_WIDTH/2);
 	int center_y = (GRID_HEIGHT/2);
 	int height, width;
-	void render(const CellMatrix& grid) {
+	void render(const CellMatrix& grid, bool show_crosshair = false) {
+		std::string frame_output = "\x1B[1;1H";
 		int start_y = center_y - (height/2);
 		int end_y = center_y + (height/2);
 		int start_x = center_x - (width/4);
 		int end_x = center_x + (width/4);
-		for (int y = start_y; y < end_y-1; y++) {
+		for (int y = start_y; y < end_y; y++) {
 			for (int x = start_x; x < end_x; x++) {
-				if (grid[y][x] == true)
-					std::cout << "██";
+				if (x < 0 || x >= GRID_WIDTH || y < 0 || y >= GRID_HEIGHT)
+					frame_output += "░░";
+				else if(x == center_x && y == center_y)
+					frame_output += grid[y][x] ? "▓▓" : "░░";
+				else if (grid[y][x] == true)
+					frame_output += "██";
 				else
-					std::cout << "  ";
+					frame_output += "  ";
 			}
-			std::cout << "\n";
+			frame_output += "\n";
 		}
+		std::cout << frame_output << std::flush;
 	}
 };
 
@@ -133,24 +139,60 @@ int main() {
 	Camera cam;
 	get_terminal_dimensions(cam.height, cam.width);
 
-	const int cx = 1024;
-    const int cy = 1024;
+	std::cout << "\x1B[?25l" << std::flush;
+
+	const int cx = GRID_WIDTH/2;
+    const int cy = GRID_HEIGHT/2;
     grid[cy - 10][cx - 10] = true;
     grid[cy - 9][cx - 9] = true;
     grid[cy - 8][cx - 9] = true;
     grid[cy - 8][cx - 10] = true;
     grid[cy - 8][cx - 11] = true;
 
-	float fps = 10;
+	float fps = 30;
 	std::chrono::duration<float> frame_duration(1.0f/fps);
+	// DRAW MODE
+	while (true) {
+		std::this_thread::sleep_for(frame_duration);
+		char input_char = get_latest_char_input();
+		// input stuff
+		if (input_char == 'h')
+			cam.center_x--;
+		else if(input_char == 'j')
+			cam.center_y++;
+		else if(input_char == 'k')
+			cam.center_y--;
+		else if(input_char == 'l')
+			cam.center_x++;
+		else if(input_char == ' ') {
+			// TODO CHECK OUT OF BOUNDS
+			grid[cam.center_y][cam.center_x] = grid[cam.center_y][cam.center_x] ? false : true;
+		}
+		else if(input_char == '\n' || input_char == 'q')
+			break;
+
+		cam.render(grid);
+	}
+	// SIMULATION MODE
 	int frame = 0;
 	while (true) {
 		frame++;
-		if (frame % 5 == 0) simulation_step(grid);
-	
+		if (frame % 10 == 0) simulation_step(grid);
 		std::this_thread::sleep_for(frame_duration);
 		char input_char = get_latest_char_input();
-		move_cursor_up(cam.height);
+		
+		// input stuff
+		if (input_char == 'h')
+			cam.center_x--;
+		else if(input_char == 'j')
+			cam.center_y++;
+		else if(input_char == 'k')
+			cam.center_y--;
+		else if(input_char == 'l')
+			cam.center_x++;
+		else if(input_char == 'q')
+			break;
+
 		cam.render(grid);
 	}
 }
