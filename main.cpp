@@ -14,6 +14,9 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <fstream>
+
+#include "parser.hpp"
 
 #define GRID_WIDTH 128
 #define GRID_HEIGHT 128
@@ -146,7 +149,7 @@ bool check_bounds(int x, int y) {
 	return (x > 0 && y > 0 && x <= GRID_WIDTH && y <= GRID_HEIGHT);
 }
 
-int main() {
+int main(int argc, char* argv[]) {
 	CellMatrix grid(GRID_HEIGHT, std::vector<Cell>(GRID_WIDTH, false));
 	Camera cam;
 	get_terminal_dimensions(cam.height, cam.width);
@@ -156,12 +159,30 @@ int main() {
 	const int cx = GRID_WIDTH/2;
     const int cy = GRID_HEIGHT/2;
 
-	// default glider
-    grid[cy - 8][cx - 8] = true;
-    grid[cy - 7][cx - 7] = true;
-    grid[cy - 6][cx - 7] = true;
-    grid[cy - 6][cx - 8] = true;
-    grid[cy - 6][cx - 9] = true;
+	// Load a pattern
+	if(argc > 1) {
+		std::ifstream rle_file(argv[1]);
+		if(!rle_file.is_open()) {
+			std::cout << "Couldn't find file\n";
+			return 1;
+		}
+		std::string line;
+		std::string text;
+		while (std::getline(rle_file, line)) text += line + "\n";
+		PatternData pattern;
+		pattern.read_rle(text);
+
+		for (int y = 0; y < pattern.size_y; y++) {
+			for (int x = 0; x < pattern.size_x; x++) {
+				int target_y = cy + pattern.top_left_y + y;
+				int target_x = cx + pattern.top_left_x + x;
+
+				if (target_x >= 0 && target_x < GRID_WIDTH && target_y >= 0 && target_y < GRID_HEIGHT) {
+					grid[target_y][target_x] = pattern.data_matrix[y][x];
+				}
+			}
+		}
+	}
 
 	float fps = 30;
 	std::chrono::duration<float> frame_duration(1.0f/fps);
