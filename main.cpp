@@ -17,11 +17,7 @@
 #include <fstream>
 
 #include "parser.hpp"
-
-#define GRID_WIDTH 128
-#define GRID_HEIGHT 128
-
-
+#include "grid.hpp"
 
 // https://stackoverflow.com/a/1022961
 void get_terminal_dimensions(int& rows, int& cols)
@@ -72,94 +68,63 @@ using Cell = bool;
 
 // stores info & methods relating to the view
 struct Camera {
-	int center_x = (GRID_WIDTH/2);
-	int center_y = (GRID_HEIGHT/2);
+	int center_x = 0;
+	int center_y = 0;
 	int height, width;
-	void render(const CellMatrix& grid, bool paused) {
-		std::string frame_output = "\x1B[1;1H";
-		int start_y = center_y - (height/2);
-		int end_y = center_y + (height/2);
-		int start_x = center_x - (width/4);
-		int end_x = center_x + (width/4);
-		for (int y = start_y; y < end_y; y++) {
-			for (int x = start_x; x < end_x; x++) {
-				if (x < 0 || x >= GRID_WIDTH || y < 0 || y >= GRID_HEIGHT)
-					frame_output += "░░";
-				else if(x == center_x && y == center_y)
-					frame_output += grid[y][x] ? "▓▓" : "░░";
-				else if (grid[y][x] == true)
-					frame_output += "██";
-				else
-					frame_output += "  ";
-			}
-			// Custom last line
-			if (y != end_y-1) {
-				frame_output += "\n";
-			} else {
-				frame_output += paused ? "[SIMULATION PAUSED]" : "[SIMULATION RUNNING]";
-				frame_output += " Cursor Location: {" + std::to_string(center_x - (GRID_WIDTH / 2)) + ", " + std::to_string(center_y - (GRID_HEIGHT / 2));
-				frame_output += "} ... ";
-			}
-		}
-		std::cout << frame_output << std::flush;
-	}
+	void render(SparseChunkGrid &grid, bool paused);
 };
 
-int count_amt_neighbours(const CellMatrix& grid, int x, int y) {
-	int count = 0;
-	for (int offset_x : {-1, 0, 1}) {
-		for (int offset_y : {-1, 0, 1}) {
-			if(offset_x == 0 && offset_y == 0) continue;
-			// skip if out of bounds (considered dead)
-			if (x+offset_x < 0 || x+offset_x >= GRID_WIDTH || y+offset_y < 0 || y+offset_y >= GRID_HEIGHT) continue;
-			if (grid[y+offset_y][x+offset_x] == true) count++;
+void Camera::render(SparseChunkGrid &grid, bool paused) {
+
+	std::string frame_output = "\x1B[1;1H";
+	int start_y = center_y - (height/2);
+	int end_y = center_y + (height/2);
+	int start_x = center_x - (width/4);
+	int end_x = center_x + (width/4);
+	// Loop through every coordinate visible by the camera
+	for (int y = end_y-1; y >= start_y; y--) {
+		for (int x = start_x; x < end_x; x++) {
+			// Get the current chunk
+			int px_chunk_x = world_to_chunk_x(x);
+			int px_chunk_y = world_to_chunk_y(y);
+			Chunk* px_chunk = grid.get_chunk(px_chunk_x, px_chunk_y);
+			if (px_chunk == nullptr) {
+				frame_output += "░░";
+			} else {
+				// Calculate where in the chunk we are
+				int inner_x = world_to_local_x(x);
+				int inner_y = world_to_local_y(y);
+				uint64_t bit_extract_mask = (uint64_t)1 << inner_x;
+				bool is_alive = (px_chunk->data[inner_y] & bit_extract_mask) != 0;
+				if (x == center_x && y == center_y) {
+					frame_output += is_alive ? "▓▓" : "░░";
+				} else {
+					frame_output += is_alive ? "██" : "  ";
+				}
+			}
+			
+		}
+		if (y != start_y) { // Line breaks
+			frame_output += "\n";
+		} else { // Custom last line
+			frame_output += paused ? "[SIMULATION PAUSED]" : "[SIMULATION RUNNING]";
+			frame_output += " Cursor: (" + std::to_string(center_x) + ", " + std::to_string(center_y);
+			frame_output += ") Chunk: (" + std::to_string(world_to_chunk_x(center_x)) + ", " + std::to_string(world_to_chunk_y(center_y));
+			frame_output += ") ... ";
 		}
 	}
-	return count;
-}
-
-// determine a theoretical cell's next state based on its current state and amt. of neighbours
-bool determine_cell_state(bool state, int amt_neighbours) {
-	if (state == true) {
-		// underpopulation
-		if (amt_neighbours < 2) return false;
-		// overpopulation
-		if (amt_neighbours > 3) return false;
-	} else {
-		// reproduction
-		if (amt_neighbours == 3) return true;
-	}
-	return state;
-}
-
-void simulation_step(CellMatrix& grid) {
-	CellMatrix write_buf(GRID_HEIGHT, std::vector<Cell>(GRID_WIDTH));
-	for (int y = 0; y < GRID_HEIGHT; y++) {
-		for (int x = 0; x < GRID_WIDTH; x++) {
-			int neighbour_count = count_amt_neighbours(grid, x, y);
-			write_buf[y][x] = determine_cell_state(grid[y][x], neighbour_count);
-		}
-	}
-	// apply changes
-	grid = write_buf;
-}
-
-// check if coordinates are within grid bounds
-bool check_bounds(int x, int y) {
-	return (x > 0 && y > 0 && x <= GRID_WIDTH && y <= GRID_HEIGHT);
+	std::cout << frame_output << std::flush;
 }
 
 int main(int argc, char* argv[]) {
-	CellMatrix grid(GRID_HEIGHT, std::vector<Cell>(GRID_WIDTH, false));
+	SparseChunkGrid grid;
+
 	Camera cam;
 	get_terminal_dimensions(cam.height, cam.width);
 
 	std::cout << "\x1B[?25l" << std::flush;
 
-	const int cx = GRID_WIDTH/2;
-    const int cy = GRID_HEIGHT/2;
-
-	// Load a pattern
+	// Load a pattern 
 	if(argc > 1) {
 		std::ifstream rle_file(argv[1]);
 		if(!rle_file.is_open()) {
@@ -174,15 +139,12 @@ int main(int argc, char* argv[]) {
 
 		for (int y = 0; y < pattern.size_y; y++) {
 			for (int x = 0; x < pattern.size_x; x++) {
-				int target_y = cy + pattern.top_left_y + y;
-				int target_x = cx + pattern.top_left_x + x;
-
-				if (target_x >= 0 && target_x < GRID_WIDTH && target_y >= 0 && target_y < GRID_HEIGHT) {
-					grid[target_y][target_x] = pattern.data_matrix[y][x];
-				}
+				int target_y = pattern.top_left_y + y;
+				int target_x = pattern.top_left_x + x;
+				if (pattern.data_matrix[y][x] == true) grid.toggle_cell(target_x, target_y);
 			}
 		}
-	}
+	} 
 
 	float fps = 30;
 	std::chrono::duration<float> frame_duration(1.0f/fps);
@@ -192,7 +154,7 @@ int main(int argc, char* argv[]) {
 	while (true) {
 		frame++;
 
-		if (frame % 5 == 0 && !paused) simulation_step(grid);
+		if (frame % 3 == 0 && !paused) grid.step();
 		get_terminal_dimensions(cam.height, cam.width);
 
 
@@ -203,14 +165,13 @@ int main(int argc, char* argv[]) {
 		if (input_char == 'h' || input_char == 'a')
 			cam.center_x--;
 		else if(input_char == 'j' || input_char == 's')
-			cam.center_y++;
-		else if(input_char == 'k' || input_char == 'w')
 			cam.center_y--;
+		else if(input_char == 'k' || input_char == 'w')
+			cam.center_y++;
 		else if(input_char == 'l' || input_char == 'd')
 			cam.center_x++;
 		else if(input_char == ' ') {
-			if (check_bounds(cam.center_x, cam.center_y))
-				grid[cam.center_y][cam.center_x] = grid[cam.center_y][cam.center_x] ? false : true;
+			grid.toggle_cell(cam.center_x, cam.center_y);
 		}
 		else if(input_char == '\n')
 			paused = paused ? false : true;
