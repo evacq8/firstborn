@@ -1,6 +1,7 @@
 #include <vector>
 #include <string>
 #include <iostream>
+#include <regex>
 
 #include "parser.hpp"
 
@@ -9,7 +10,7 @@ std::vector<std::string> break_str_into_lines(std::string block) {
 	int last_break = 0;
 	for (int c = 0; c <= block.length(); c++) {
 		// run until you find a line break, then extract substring, mark it down in last_break and keep going
-		if (block[c] == '\n' || c == block.length()) {
+		if (c == block.length() || block[c] == '\n') {
 			lines.push_back(block.substr(last_break, c-last_break));
 			last_break = c+1;
 		}
@@ -17,80 +18,112 @@ std::vector<std::string> break_str_into_lines(std::string block) {
 	return lines;
 }
 
-bool PatternData::read_rle(std::string content) {
-	auto lines = break_str_into_lines(content);
+bool PatternData::parse_rle_header(const std::string& line) {
+	//                         x   =   ( 1 )   ,   y   =   ( 2 )(?    ,   rule   =   B( 3 )/S( 4 )?)
+	std::regex header_regex(R"(x\s*=\s*(\d+)\s*,\s*y\s*=\s*(\d+)(?:\s*,\s*rule\s*=\s*B(\d*)/S(\d*))?)");
+	std::smatch matches;
+	if (std::regex_search(line, matches, header_regex)) {
+		width = std::stoi(matches[1].str());
+		height = std::stoi(matches[2].str());
+		top_left_x = -width/2;
+		top_left_y = width/2;
+		// check if 3 and 4 exist cuz' those were optional
+		if (matches[3].matched && matches[4].matched) {
+			// Reset both rules
+			for (int i = 0; i < 9; i++) { 
+				birth_rule[i] = false;
+				survival_rule[i] = false;
+			}
 
-	// run length tracking
-	int loc_x = 0;
-	int loc_y = 0;
-	// string to store the current number, resets upon hitting a symbol
-	std::string running_digits = "";
-
-	for (auto line : lines) {
-		// detect # meta data lines
-		if (line[0] == '#') {
-			if (line[1] == 'N') {
-				name = line.substr(3, line.length());
-			} else if (line[1] == 'O') {
-				attributions = line.substr(3, line.length());
-			} else if (line[1] == 'R') {
-				// e.g. #R -22 -12
-				// find second space
-				int second_space_pos;
-				for (int c = 3; c < line.length(); c++) if (line[c] == ' ') second_space_pos = c;
-				// capture the first number
-				top_left_x = std::stoi(line.substr(3, second_space_pos-3));
-				// capture the second number
-				top_left_y = std::stoi(line.substr(second_space_pos+1, line.length()-second_space_pos+1));
+			std::string birth_str = matches[3].str();
+			std::string survival_str = matches[4].str();
+			// Loop through each digit in each rule string
+			for (char chara : birth_str) {
+				int num = chara - '0';
+				if(num > 8 || num < 0) { std::cout << "Unsupported digit in birth rule."; return false; }
+				birth_rule[num] = true;
+			}
+			for (char chara : survival_str) {
+				int num = chara - '0';
+				if(num > 8 || num < 0) { std::cout << "Unsupported digit in survival rule."; return false; }
+				survival_rule[num] = true;
 			}
 		}
-		// detect header line
-		else if (line[0] == 'x') {
-			// e.g. x = 36, y = 9
-			// find first equal sign
-			int eq_1;
-			for (int c = 1; c < line.length(); c++) if (line[c] == '=') { eq_1 = c; break; }
-			// find next comma
-			int comma_1;
-			for (int c = eq_1; c < line.length(); c++) if (line[c] == ',') { comma_1 = c; break; }
-			// find next equal sign
-			int eq_2;
-			for (int c = comma_1; c < line.length(); c++) if (line[c] == '=') { eq_2 = c; break; }
-			// find end of line or comma or space
-			int comma_2 = line.length();
-			for (int c = eq_2+2; c < line.length(); c++) if (line[c] == ',') { comma_2 = c; break; }
-			// extract x value
-			size_x = std::stoi(line.substr(eq_1+1, comma_1-1-eq_1));
-			size_y = std::stoi(line.substr(eq_2+1, comma_2-1-eq_2));
+	} else {
+		std::cout << "Couldn't Parse RLE Header...\n";
+		return false;
+	}
+	return true;
+}
 
-			// initialize data in accordance to inputted dimensions
-			data_matrix = std::vector<std::vector<bool>>(size_y, std::vector<bool>(size_x, false));
-		}
-		// if none of the above, treat it as RLE data
-		else {
-			for (auto chara : line) {
-				if (chara == 'b' || chara == 'o' || chara == 'g' || chara == 'x' || chara == 'y' || chara == 'z') {
-					int run_len = (running_digits.length() != 0) ? std::stoi(running_digits) : 1;
-					while (run_len > 0) {
-						data_matrix[loc_y][loc_x] = (chara == 'b') ? false : true;
-						loc_x++;
-						run_len--;
-					}
-					running_digits = "";
-				} else if (chara == '$') {
-					loc_y++; 
-					loc_x = 0;
-				}
-				else if (chara == '!') break;
-				else { // digits
-					running_digits += chara;
-				}
+bool PatternData::parse_rle_data(std::string block) {
+	// Resize data matrix
+	data_matrix = std::vector<std::vector<bool>>(height, std::vector<bool>(width, false));
+
+	std::regex token_reg(R"((\d*)([bo$\!]))");
+	auto tokens_begin = std::sregex_iterator(block.begin(), block.end(), token_reg);
+	auto tokens_end = std::sregex_iterator();
+	int current_x = 0;
+	int current_y = 0;
+	// Iterate throgugh pairs of (COUNT:SYMBOL)
+	for (std::sregex_iterator i = tokens_begin; i != tokens_end; ++i) {
+		std::smatch match = *i;
+		auto count_str = match[1].str();
+		int count = count_str.empty() ? 1 : std::stoi(count_str);
+
+		char symbol = match[2].str()[0];
+		if(symbol == '!') break; // File end
+		else if(symbol == '$') { // Skip line(s)
+			current_y += count;
+			current_x = 0;
+		} else if(symbol == 'o') { // Place live cell(s)
+			while (count > 0) {
+				data_matrix[(height-1)-current_y][current_x] = true;
+				current_x++;
+				count--;
 			}
+		} else if(symbol == 'b') { // Place dead cell(s)
+			while (count > 0) {
+				data_matrix[(height-1)-current_y][current_x] = false;
+				current_x++;
+				count--;
+			}
+		} else {
+			std::cout << "Unrecognized symbol '" << symbol << "'\n";
+			return false;
 		}
 	}
 	return true;
 }
-	
+
+bool PatternData::parse_rle(std::string block) {
+	std::vector<std::string> lines = break_str_into_lines(block);
+	std::string rle_data = "";
+	for (std::string line : lines) {
+		if (line.empty()) continue;
+		// META / COMMENT LINES
+		if (line[0] == '#') {
+			// Name
+			if      (line[1] == 'N') name = line.substr(3, line.length());
+			// Attributions
+			else if (line[1] == 'O') attributions = line.substr(3, line.length());
+			// Top-left coordinates
+			else if (line[1] == 'R') {
+				std::regex reg(R"(#R\s*(-?\d+)\s*(-?\d+))");
+				std::smatch matches;
+				if (std::regex_search(line, matches, reg)) {
+					top_left_x = std::stoi(matches[1].str());
+					top_left_y = std::stoi(matches[2].str());
+				}
+			}
+		} else if (line[0] == 'x') {
+			if (!parse_rle_header(line)) return false;
+		} else {
+			rle_data += line;
+		}
+	}
+	return parse_rle_data(rle_data);
+}
 
 /*
 int main() {

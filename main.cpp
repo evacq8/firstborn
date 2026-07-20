@@ -135,11 +135,14 @@ int main(int argc, char* argv[]) {
 		std::string text;
 		while (std::getline(rle_file, line)) text += line + "\n";
 		PatternData pattern;
-		pattern.read_rle(text);
+		if(!pattern.parse_rle(text)) {
+			std::cout << "Errors occured whilst loading " << argv[1] << "\n";
+			return 1;
+		}
 
-		for (int y = 0; y < pattern.size_y; y++) {
-			for (int x = 0; x < pattern.size_x; x++) {
-				int target_y = pattern.top_left_y + y;
+		for (int y = 0; y < pattern.height; y++) {
+			for (int x = 0; x < pattern.width; x++) {
+				int target_y = pattern.top_left_y - y;
 				int target_x = pattern.top_left_x + x;
 				if (pattern.data_matrix[y][x] == true) grid.toggle_cell(target_x, target_y);
 			}
